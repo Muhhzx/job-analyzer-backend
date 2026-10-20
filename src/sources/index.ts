@@ -1,24 +1,30 @@
 import { db } from "../db.js";
 import type { Profile } from "../profile.js";
+import { github } from "./github.js";
 import { greenhouse } from "./greenhouse.js";
+import { gupy } from "./gupy.js";
 import { lever } from "./lever.js";
 import { remotive } from "./remotive.js";
 import type { JobSource, RawJob } from "./types.js";
 
 /** Registro central de fontes. Nova fonte = novo arquivo + uma linha aqui. */
-export const SOURCES: JobSource[] = [remotive, greenhouse, lever];
+export const SOURCES: JobSource[] = [gupy, github, remotive, greenhouse, lever];
 
-export type CollectResult = { source: string; found: number; added: number; error?: string };
+/**
+ * Resultado por fonte. `found`: vagas que bateram com suas palavras-chave.
+ * `added`: quantas eram novas (as repetidas são ignoradas). `warnings`: o que falhou.
+ */
+export type CollectResult = { source: string; found: number; added: number; warnings: string[]; error?: string };
 
 export async function collectJobs(userId: number, profile: Profile): Promise<CollectResult[]> {
   const configured = SOURCES.filter((s) => s.isConfigured(profile));
   return Promise.all(
     configured.map(async (source) => {
       try {
-        const jobs = await source.fetchJobs(profile);
-        return { source: source.name, found: jobs.length, added: insertJobs(userId, source.id, jobs) };
+        const { jobs, warnings } = await source.fetchJobs(profile);
+        return { source: source.name, found: jobs.length, added: insertJobs(userId, source.id, jobs), warnings };
       } catch (err) {
-        return { source: source.name, found: 0, added: 0, error: (err as Error).message };
+        return { source: source.name, found: 0, added: 0, warnings: [], error: (err as Error).message };
       }
     }),
   );

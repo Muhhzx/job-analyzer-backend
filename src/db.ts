@@ -96,3 +96,31 @@ fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
 export const db = new DatabaseSync(config.dbPath, { timeout: 5000 });
 db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
 db.exec(SCHEMA);
+
+/**
+ * Migrações: mudanças no banco depois da primeira versão.
+ * Cada uma roda uma vez só, quando a coluna ainda não existe.
+ */
+function hasColumn(table: string, column: string) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  return cols.some((c) => c.name === column);
+}
+
+if (!hasColumn("jobs", "preview_score")) {
+  // A nota grátis (palavras-chave) agora fica na vaga; `analyses` guarda só análises de IA.
+  db.exec(`
+    ALTER TABLE jobs ADD COLUMN preview_score INTEGER;
+    ALTER TABLE jobs ADD COLUMN preview TEXT;
+    DELETE FROM analyses WHERE engine = 'palavras-chave';
+  `);
+}
+
+if (!hasColumn("jobs", "seniority_level")) {
+  // Nível detectado da vaga (0 Estágio … 4 Especialista) e os níveis que o usuário quer ver.
+  // Zera as prévias para que todas as vagas sejam recalculadas com a detecção nova.
+  db.exec(`
+    ALTER TABLE jobs ADD COLUMN seniority_level INTEGER;
+    ALTER TABLE profiles ADD COLUMN accepted_levels TEXT NOT NULL DEFAULT '';
+    UPDATE jobs SET preview_score = NULL, preview = NULL;
+  `);
+}

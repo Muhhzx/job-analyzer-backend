@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import { countPending } from "../analyzer.js";
 import { requireAuth } from "../auth.js";
 import { config } from "../config.js";
 import { db } from "../db.js";
 import { listNotifications, markAllRead, unreadCount } from "../notify.js";
+import { refreshPreviews } from "../preview.js";
+import { acceptedLevels, seniorityFilterSql } from "../seniority.js";
 import { getProfile, profileCompletion } from "../profile.js";
 import { SOURCES } from "../sources/index.js";
 import { monthUsage } from "../usage.js";
@@ -13,26 +14,32 @@ export async function dashboardRoutes(app: FastifyInstance) {
 
   app.get("/dashboard", async (request) => {
     const userId = request.user.id;
+    refreshPreviews(userId);
     const profile = getProfile(userId);
+    // Mesmo filtro de senioridade da lista de vagas.
+    const levelFilter = seniorityFilterSql(acceptedLevels(profile));
 
+    // Nota que vale: a da IA, se existir; senão, a prévia grátis.
     const stats = db
       .prepare(
         `SELECT COUNT(*) AS total, COUNT(a.job_id) AS analyzed,
-                SUM(CASE WHEN a.score >= ? AND j.status != 'descartada' THEN 1 ELSE 0 END) AS good,
+                SUM(CASE WHEN COALESCE(a.score, j.preview_score) >= ? AND j.status != 'descartada' THEN 1 ELSE 0 END) AS good,
                 SUM(CASE WHEN j.status = 'salva' THEN 1 ELSE 0 END) AS saved,
                 SUM(CASE WHEN j.status = 'candidatado' THEN 1 ELSE 0 END) AS applied
-         FROM jobs j LEFT JOIN analyses a ON a.job_id = j.id WHERE j.user_id = ?`,
+         FROM jobs j LEFT JOIN analyses a ON a.job_id = j.id
+         WHERE j.user_id = ? AND COALESCE(a.score, j.preview_score) >= ? AND ${levelFilter}`,
       )
-      .get(profile.min_score, userId) as Record<string, number | null>;
+      .get(profile.min_score, userId, config.minVisibleScore) as Record<string, number | null>;
 
     const topJobs = db
       .prepare(
-        `SELECT j.id, j.title, j.company, j.location, j.source, j.status, a.score, a.verdict, a.summary
-         FROM jobs j JOIN analyses a ON a.job_id = j.id
+        `SELECT j.id, j.title, j.company, j.location, j.source, j.status, j.preview_score, a.score, a.verdict, a.summary
+         FROM jobs j LEFT JOIN analyses a ON a.job_id = j.id
          WHERE j.user_id = ? AND j.status NOT IN ('descartada', 'candidatado')
-         ORDER BY a.score DESC, j.created_at DESC LIMIT 5`,
+           AND COALESCE(a.score, j.preview_score) >= ? AND ${levelFilter}
+         ORDER BY COALESCE(a.score, j.preview_score) DESC, j.created_at DESC LIMIT 5`,
       )
-      .all(userId);
+      .all(userId, config.minVisibleScore);
 
     const nextRun =
       profile.auto_collect_hours > 0
@@ -43,7 +50,6 @@ export async function dashboardRoutes(app: FastifyInstance) {
 
     return {
       stats: Object.fromEntries(Object.entries(stats).map(([k, v]) => [k, Number(v ?? 0)])),
-      pending: countPending(userId),
       minScore: profile.min_score,
       topJobs,
       completion: profileCompletion(profile),

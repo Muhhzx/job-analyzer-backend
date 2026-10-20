@@ -1,12 +1,13 @@
-import { analyzePending } from "./analyzer.js";
+import { analyzeAboveCutoff } from "./analyzer.js";
 import { db } from "./db.js";
 import { notify } from "./notify.js";
 import { getProfile } from "./profile.js";
+import { refreshPreviews } from "./preview.js";
 import { collectJobs } from "./sources/index.js";
 
 const CHECK_EVERY_MS = 5 * 60 * 1000;
 
-/** Roda a coleta (e a análise, se o usuário ligou) para quem está no horário. */
+/** Roda a busca (e a análise com IA, se o usuário ligou) para quem está no horário. */
 export async function runDueJobs() {
   const due = db
     .prepare(
@@ -24,8 +25,16 @@ export async function runDueJobs() {
       const profile = getProfile(user_id);
       const results = await collectJobs(user_id, profile);
       const added = results.reduce((s, r) => s + r.added, 0);
-      if (profile.auto_analyze && added > 0) await analyzePending(user_id, 20);
-      if (added > 0) await notify(user_id, null, `Coleta automática: ${added} vagas novas.`);
+      if (added === 0) continue;
+
+      refreshPreviews(user_id); // nota grátis em todas as vagas novas
+      // IA só se o usuário ligou a análise automática, e só nas que passaram do corte.
+      const analyzed = profile.auto_analyze ? await analyzeAboveCutoff(user_id) : 0;
+      await notify(
+        user_id,
+        null,
+        `Busca automática: ${added} vagas novas${analyzed ? `, ${analyzed} analisadas com IA` : ""}.`,
+      );
     } catch (err) {
       console.error(`[agendador] usuário ${user_id}:`, err);
     }
@@ -34,5 +43,5 @@ export async function runDueJobs() {
 
 export function startScheduler() {
   setInterval(() => void runDueJobs(), CHECK_EVERY_MS);
-  console.log("[agendador] ligado: verifica a cada 5 minutos quem tem coleta automática no horário");
+  console.log("[agendador] ligado: verifica a cada 5 minutos quem tem busca automática no horário");
 }

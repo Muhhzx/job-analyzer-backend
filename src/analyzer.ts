@@ -4,9 +4,15 @@ import { z } from "zod";
 import { config } from "./config.js";
 import { db } from "./db.js";
 import { notify } from "./notify.js";
-import { getProfile, profileToText, splitList, type Profile } from "./profile.js";
-import { normalize } from "./sources/types.js";
+import { getProfile, profileToText, type Profile } from "./profile.js";
+import { acceptedLevels, seniorityFilterSql } from "./seniority.js";
 import { limitReached, recordUsage } from "./usage.js";
+
+/**
+ * Análise com IA. Só roda quando o usuário pede (botão "Analisar com IA",
+ * com confirmação) ou na análise automática, se ele ligou essa opção.
+ * A nota grátis por palavras-chave fica em preview.ts.
+ */
 
 export type Job = {
   id: number;
@@ -20,6 +26,8 @@ export type Job = {
   posted_at: string | null;
   status: string;
   created_at: string;
+  preview_score: number | null;
+  preview: string | null;
 };
 
 const AnalysisSchema = z.object({
@@ -28,15 +36,17 @@ const AnalysisSchema = z.object({
   summary: z.string().describe("2 a 3 frases explicando a nota"),
   strengths: z.array(z.string()).describe("Requisitos da vaga que o candidato atende"),
   gaps: z.array(z.string()).describe("Requisitos que faltam ou estão fracos"),
-  red_flags: z.array(z.string()).describe("Conflitos com deal breakers, local, modelo de trabalho, salário etc."),
+  red_flags: z.array(z.string()).describe("Conflitos com senioridade, deal breakers, local, modelo de trabalho, salário etc."),
   application_tips: z.string().describe("Como o candidato deve se posicionar ao se candidatar"),
 });
 
 export type Analysis = z.infer<typeof AnalysisSchema> & { engine: string };
 
-const SYSTEM_PROMPT = `Você é um recrutador técnico experiente que avalia a compatibilidade entre um candidato e uma vaga.
+const SYSTEM_PROMPT = `Você é um recrutador técnico experiente que avalia a compatibilidade entre um candidato e uma vaga no mercado brasileiro.
 Seja honesto e específico: cite requisitos concretos da vaga, não elogios genéricos.
-Pese os requisitos obrigatórios mais do que os desejáveis. Conflitos com os "deal breakers", localização, modelo de trabalho ou salário do candidato devem baixar a nota bastante e aparecer em red_flags.
+Pese os requisitos obrigatórios mais do que os desejáveis.
+Senioridade é decisiva: compare o nível que a vaga pede (pelo título, anos de experiência e responsabilidades) com o nível do candidato. Vaga um nível acima deve ficar no máximo "parcial"; dois ou mais níveis acima (ex.: candidato Júnior e vaga Sênior) deve ser "fraca" e aparecer em red_flags.
+Conflitos com os "deal breakers", localização, modelo de trabalho ou salário do candidato também devem baixar a nota bastante e aparecer em red_flags.
 Escala da nota: 85-100 excelente (deve se candidatar já), 70-84 boa, 45-69 parcial, 0-44 fraca.
 Responda sempre em português do Brasil, de forma curta e direta.`;
 
@@ -44,6 +54,9 @@ const MAX_DESCRIPTION_CHARS = 30_000;
 
 let client: Anthropic | null = null;
 const getClient = () => (client ??= new Anthropic());
+
+/** Erro com mensagem pensada para mostrar ao usuário. */
+export class AnalysisUnavailable extends Error {}
 
 async function analyzeWithClaude(profile: Profile, job: Job): Promise<Analysis> {
   const description =
@@ -67,61 +80,22 @@ async function analyzeWithClaude(profile: Profile, job: Job): Promise<Analysis> 
 
   recordUsage(job.user_id, job.id, response.model, response.usage.input_tokens, response.usage.output_tokens);
 
-  if (response.stop_reason === "refusal") throw new Error("A IA recusou analisar esta vaga.");
+  if (response.stop_reason === "refusal") throw new AnalysisUnavailable("A IA recusou analisar esta vaga.");
   const parsed = response.parsed_output;
   if (!parsed) throw new Error(`Resposta da IA sem análise (stop_reason: ${response.stop_reason}).`);
   return { ...parsed, score: Math.max(0, Math.min(100, parsed.score)), engine: response.model };
 }
 
-/** Análise grátis por palavras-chave. Também serve de pré-filtro para a IA. */
-function analyzeWithKeywords(profile: Profile, job: Job): Analysis {
-  const text = normalize(`${job.title}\n${job.description}`);
-  const skills = splitList(profile.skills);
-  const strengths = skills.filter((s) => text.includes(normalize(s)));
-  const roles = splitList(profile.desired_roles);
-  const roleMatch = roles.some((r) => normalize(job.title).includes(normalize(r)));
-  const flags = splitList(profile.deal_breakers).filter((d) => text.includes(normalize(d)));
-
-  const skillScore = skills.length ? (strengths.length / Math.min(skills.length, 5)) * 70 : 30;
-  let score = Math.round(Math.min(70, skillScore) + (roleMatch ? 30 : 10) - flags.length * 25);
-  score = Math.max(0, Math.min(100, score));
-
-  return {
-    score,
-    verdict: score >= 85 ? "excelente" : score >= 70 ? "boa" : score >= 45 ? "parcial" : "fraca",
-    summary: `${strengths.length} das suas habilidades aparecem na vaga${roleMatch ? " e o título bate com um cargo desejado" : ""}.`,
-    strengths,
-    gaps: [],
-    red_flags: flags.map((f) => `A vaga menciona "${f}", que está nos seus deal breakers`),
-    application_tips: "",
-    engine: "palavras-chave",
-  };
-}
-
-const keywordOnly = (base: Analysis, reason: string): Analysis => ({
-  ...base,
-  summary: `${base.summary} ${reason}`,
-  engine: "palavras-chave",
-});
-
-/**
- * Decide quem analisa a vaga: palavras-chave (grátis) ou IA.
- * `force` pula o pré-filtro (quando o usuário pede a análise de uma vaga específica),
- * mas o limite mensal vale sempre.
- */
-export async function analyzeJob(job: Job, { force = false } = {}): Promise<Analysis> {
-  const profile = getProfile(job.user_id);
-  const keyword = analyzeWithKeywords(profile, job);
-  let analysis: Analysis;
-
+/** Analisa uma vaga com IA e salva. Falha com mensagem clara se a IA estiver indisponível. */
+export async function analyzeJob(job: Job): Promise<Analysis> {
   if (!config.ai.enabled) {
-    analysis = keywordOnly(keyword, "Configure a ANTHROPIC_API_KEY para a análise com IA.");
-  } else if (!force && keyword.score < config.ai.prefilterMinScore) {
-    analysis = keywordOnly(keyword, "Pouca compatibilidade no pré-filtro, então a IA não foi usada (sem custo).");
-  } else {
-    const blocked = limitReached();
-    analysis = blocked ? keywordOnly(keyword, `IA pausada: ${blocked}.`) : await analyzeWithClaude(profile, job);
+    throw new AnalysisUnavailable("A IA está desligada: falta a ANTHROPIC_API_KEY no .env do backend.");
   }
+  const blocked = limitReached();
+  if (blocked) throw new AnalysisUnavailable(`IA pausada: ${blocked}. Volta no dia 1º.`);
+
+  const profile = getProfile(job.user_id);
+  const analysis = await analyzeWithClaude(profile, job);
 
   db.prepare(
     `INSERT OR REPLACE INTO analyses (job_id, score, verdict, summary, strengths, gaps, red_flags, application_tips, engine)
@@ -144,37 +118,31 @@ export async function analyzeJob(job: Job, { force = false } = {}): Promise<Anal
   return analysis;
 }
 
-const PENDING_WHERE = "j.user_id = ? AND a.job_id IS NULL AND j.status != 'descartada'";
-
-/** Analisa as vagas ainda sem análise, em lotes pequenos para controlar custo. */
-export async function analyzePending(userId: number, limit = 10) {
+/**
+ * Usado só pela análise automática (agendador). Analisa com IA as vagas
+ * sem análise cuja prévia passou do corte. As abaixo do corte nunca entram aqui.
+ */
+export async function analyzeAboveCutoff(userId: number, limit = 20) {
+  // Nunca gasta IA com vagas fora dos níveis de senioridade que o usuário quer ver.
+  const levelFilter = seniorityFilterSql(acceptedLevels(getProfile(userId)));
   const jobs = db
     .prepare(
       `SELECT j.* FROM jobs j LEFT JOIN analyses a ON a.job_id = j.id
-       WHERE ${PENDING_WHERE} ORDER BY j.created_at DESC LIMIT ?`,
+       WHERE j.user_id = ? AND a.job_id IS NULL AND j.status != 'descartada' AND j.preview_score >= ?
+         AND ${levelFilter}
+       ORDER BY j.preview_score DESC LIMIT ?`,
     )
-    .all(userId, limit) as Job[];
+    .all(userId, config.ai.prefilterMinScore, limit) as Job[];
 
   let done = 0;
-  let withAi = 0;
-  const errors: string[] = [];
-  // Algumas em paralelo para não demorar demais.
-  for (let i = 0; i < jobs.length; i += 3) {
-    const batch = jobs.slice(i, i + 3);
-    const results = await Promise.allSettled(batch.map((j) => analyzeJob(j)));
-    results.forEach((r, k) => {
-      if (r.status === "fulfilled") {
-        done++;
-        if (r.value.engine !== "palavras-chave") withAi++;
-      } else errors.push(`${batch[k].title}: ${(r.reason as Error).message}`);
-    });
+  for (const job of jobs) {
+    try {
+      await analyzeJob(job);
+      done++;
+    } catch (err) {
+      if (err instanceof AnalysisUnavailable) break; // IA desligada ou limite atingido: para o lote
+      console.error(`[análise automática] vaga ${job.id}:`, err);
+    }
   }
-  return { done, withAi, errors, remaining: countPending(userId) };
-}
-
-export function countPending(userId: number): number {
-  const row = db
-    .prepare(`SELECT COUNT(*) AS n FROM jobs j LEFT JOIN analyses a ON a.job_id = j.id WHERE ${PENDING_WHERE}`)
-    .get(userId) as { n: number };
-  return Number(row.n);
+  return done;
 }

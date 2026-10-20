@@ -16,6 +16,8 @@ export type Profile = {
   search_keywords: string;
   greenhouse_boards: string;
   lever_boards: string;
+  /** Níveis de vaga que o usuário quer ver, ex.: "1,2". Vazio = o nível dele e um acima. */
+  accepted_levels: string;
   min_score: number;
   /** 0 = só manual; senão, coleta automática a cada N horas. */
   auto_collect_hours: number;
@@ -40,6 +42,7 @@ export const PROFILE_TEXT_FIELDS = [
   "search_keywords",
   "greenhouse_boards",
   "lever_boards",
+  "accepted_levels",
 ] as const;
 
 export const AUTO_COLLECT_OPTIONS = [0, 6, 12, 24, 48, 168];

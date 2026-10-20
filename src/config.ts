@@ -18,6 +18,11 @@ export const config = {
   port: num(process.env.PORT, 4000),
   dbPath: path.resolve(ROOT, process.env.DATABASE_PATH ?? "data/job-analyzer.db"),
   production: process.env.NODE_ENV === "production",
+  /**
+   * Vagas com nota abaixo disso ficam salvas, mas não aparecem em lugar nenhum.
+   * Salvas para que a próxima busca não traga a mesma vaga de novo.
+   */
+  minVisibleScore: num(process.env.MIN_VISIBLE_SCORE, 20),
   ai: {
     enabled: Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN),
     model: process.env.ANTHROPIC_MODEL || "claude-haiku-5-5",

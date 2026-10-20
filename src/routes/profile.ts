@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireAuth } from "../auth.js";
+import { refreshPreviews } from "../preview.js";
 import {
   AUTO_COLLECT_OPTIONS,
   getProfile,
@@ -26,6 +27,11 @@ const ProfileBody = z.object({
   search_keywords: text,
   greenhouse_boards: text,
   lever_boards: text,
+  // Lista de níveis (0 a 4) separados por vírgula, ex.: "1,2". Vazio = automático.
+  accepted_levels: z
+    .string()
+    .regex(/^(\s*[0-4]\s*(,\s*[0-4]\s*)*)?$/, "Níveis inválidos.")
+    .optional(),
   min_score: z.number().int().min(0).max(100).optional(),
   auto_collect_hours: z
     .number()
@@ -51,6 +57,8 @@ export async function profileRoutes(app: FastifyInstance) {
   app.put("/", async (request) => {
     const body = ProfileBody.parse(request.body);
     updateProfile(request.user.id, { ...body, auto_analyze: body.auto_analyze === undefined ? undefined : body.auto_analyze ? 1 : 0 });
+    // O perfil mudou (habilidades, cargos, senioridade...): recalcula a nota grátis de todas as vagas.
+    refreshPreviews(request.user.id, { all: true });
     return serialize(request.user.id);
   });
 }

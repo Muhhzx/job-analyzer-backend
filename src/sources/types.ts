@@ -22,8 +22,35 @@ export type JobSource = {
   /** Campo do perfil que configura essa fonte. */
   profileField: "search_keywords" | "greenhouse_boards" | "lever_boards";
   isConfigured(profile: Profile): boolean;
-  fetchJobs(profile: Profile): Promise<RawJob[]>;
+  fetchJobs(profile: Profile): Promise<FetchResult>;
 };
+
+/**
+ * O que uma fonte devolve. `warnings` lista o que deu errado (ex.: empresa que não
+ * existe) sem derrubar o resto: as vagas das outras empresas continuam vindo.
+ */
+export type FetchResult = { jobs: RawJob[]; warnings: string[] };
+
+/**
+ * Roda `fn` para cada item (empresa ou palavra-chave). Se um falhar, anota o aviso
+ * e segue para o próximo, em vez de perder tudo por causa de um nome errado.
+ */
+export async function eachSafely<T>(
+  items: T[],
+  fn: (item: T) => Promise<RawJob[]>,
+  describeError: (item: T, err: Error) => string,
+): Promise<FetchResult> {
+  const jobs: RawJob[] = [];
+  const warnings: string[] = [];
+  for (const item of items) {
+    try {
+      jobs.push(...(await fn(item)));
+    } catch (err) {
+      warnings.push(describeError(item, err as Error));
+    }
+  }
+  return { jobs, warnings };
+}
 
 export function htmlToText(html: string): string {
   return html
@@ -49,12 +76,29 @@ export function decodeEntities(s: string): string {
     .replace(/&amp;/g, "&");
 }
 
+export class HttpError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/** Mensagem amigável para uma empresa que falhou no Greenhouse/Lever. */
+export function boardError(site: string, board: string, err: Error): string {
+  if (err instanceof HttpError && err.status === 404) {
+    return `"${board}" não existe no ${site} (confira o nome ou remova da lista)`;
+  }
+  return `"${board}": ${err.message}`;
+}
+
 export async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(url, {
     headers: { "User-Agent": "JobAnalyzer/0.2", Accept: "application/json" },
     signal: AbortSignal.timeout(20_000),
   });
-  if (!res.ok) throw new Error(`${new URL(url).host} respondeu ${res.status}`);
+  if (!res.ok) throw new HttpError(res.status, `${new URL(url).host} respondeu ${res.status}`);
   return (await res.json()) as T;
 }
 
