@@ -3,7 +3,6 @@ import { requireAuth } from "../auth.js";
 import { config } from "../config.js";
 import { db } from "../db.js";
 import { listNotifications, markAllRead, unreadCount } from "../notify.js";
-import { refreshPreviews } from "../preview.js";
 import { acceptedLevels, seniorityFilterSql } from "../seniority.js";
 import { getProfile, profileCompletion } from "../profile.js";
 import { SOURCES } from "../sources/index.js";
@@ -14,7 +13,6 @@ export async function dashboardRoutes(app: FastifyInstance) {
 
   app.get("/dashboard", async (request) => {
     const userId = request.user.id;
-    refreshPreviews(userId);
     const profile = getProfile(userId);
     // Mesmo filtro de senioridade da lista de vagas.
     const levelFilter = seniorityFilterSql(acceptedLevels(profile));

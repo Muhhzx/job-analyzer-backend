@@ -1,6 +1,16 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { endSession, hashPassword, requireAuth, startSession, userFromRequest, verifyPassword } from "../auth.js";
+import {
+  clearLoginFailures,
+  endSession,
+  hashPassword,
+  loginBlockedFor,
+  registerLoginFailure,
+  requireAuth,
+  startSession,
+  userFromRequest,
+  verifyPassword,
+} from "../auth.js";
 import { db } from "../db.js";
 
 const RegisterBody = z.object({
@@ -30,12 +40,20 @@ export async function authRoutes(app: FastifyInstance) {
 
   app.post("/login", async (request, reply) => {
     const body = LoginBody.parse(request.body);
+    const blockedMinutes = loginBlockedFor(body.email);
+    if (blockedMinutes > 0) {
+      return reply
+        .code(429)
+        .send({ error: `Muitas tentativas de login. Tente de novo em ${blockedMinutes} min.` });
+    }
     const user = db.prepare("SELECT id, name, email, password_hash FROM users WHERE email = ?").get(body.email) as
       | { id: number; name: string; email: string; password_hash: string }
       | undefined;
     if (!user || !verifyPassword(body.password, user.password_hash)) {
+      registerLoginFailure(body.email);
       return reply.code(401).send({ error: "E-mail ou senha incorretos." });
     }
+    clearLoginFailures(body.email);
     startSession(reply, user.id);
     return { user: { id: user.id, name: user.name, email: user.email } };
   });

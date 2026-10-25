@@ -94,7 +94,14 @@ CREATE TABLE IF NOT EXISTS notifications (
 fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
 
 export const db = new DatabaseSync(config.dbPath, { timeout: 5000 });
-db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+// WAL: leituras não esperam escritas (vários usuários ao mesmo tempo).
+// synchronous=NORMAL: seguro em WAL e bem mais rápido que o padrão FULL.
+db.exec(`
+  PRAGMA journal_mode = WAL;
+  PRAGMA synchronous = NORMAL;
+  PRAGMA foreign_keys = ON;
+  PRAGMA busy_timeout = 5000;
+`);
 db.exec(SCHEMA);
 
 /**
@@ -115,6 +122,12 @@ if (!hasColumn("jobs", "preview_score")) {
   `);
 }
 
+if (!hasColumn("analyses", "salary_estimate")) {
+  // Faixa salarial da vaga (informada ou estimada pela IA), guardada como JSON.
+  // Análises feitas antes desta coluna ficam com NULL: a tela simplesmente não mostra o salário.
+  db.exec("ALTER TABLE analyses ADD COLUMN salary_estimate TEXT;");
+}
+
 if (!hasColumn("jobs", "seniority_level")) {
   // Nível detectado da vaga (0 Estágio … 4 Especialista) e os níveis que o usuário quer ver.
   // Zera as prévias para que todas as vagas sejam recalculadas com a detecção nova.
@@ -124,3 +137,23 @@ if (!hasColumn("jobs", "seniority_level")) {
     UPDATE jobs SET preview_score = NULL, preview = NULL;
   `);
 }
+
+/**
+ * Índices: sem eles, toda consulta lê a tabela inteira (de todos os usuários).
+ * Cada um segue os filtros das telas: vagas do usuário por situação, por nota,
+ * por empresa e por data; notificações não lidas; sessões por usuário; uso da IA no mês.
+ * IF NOT EXISTS: seguro rodar a cada inicialização.
+ */
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_jobs_user_status   ON jobs (user_id, status);
+  CREATE INDEX IF NOT EXISTS idx_jobs_user_preview  ON jobs (user_id, preview_score);
+  CREATE INDEX IF NOT EXISTS idx_jobs_user_company  ON jobs (user_id, company);
+  CREATE INDEX IF NOT EXISTS idx_jobs_user_created  ON jobs (user_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_jobs_user_level    ON jobs (user_id, seniority_level);
+  CREATE INDEX IF NOT EXISTS idx_notif_user_read    ON notifications (user_id, read);
+  CREATE INDEX IF NOT EXISTS idx_sessions_user      ON sessions (user_id);
+  CREATE INDEX IF NOT EXISTS idx_sessions_expires   ON sessions (expires_at);
+  CREATE INDEX IF NOT EXISTS idx_ai_usage_created   ON ai_usage (created_at);
+  CREATE INDEX IF NOT EXISTS idx_ai_usage_user      ON ai_usage (user_id);
+`);
+db.exec("PRAGMA optimize;");

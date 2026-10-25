@@ -65,6 +65,42 @@ export function userFromRequest(request: FastifyRequest): User | null {
   return { id: row.id, name: row.name, email: row.email };
 }
 
+/** Apaga as sessões vencidas (roda na inicialização e de hora em hora). */
+export function cleanupExpiredSessions(): number {
+  const r = db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(new Date().toISOString());
+  return Number(r.changes);
+}
+
+/**
+ * Limite de tentativas de login por e-mail: 5 erros em 15 minutos bloqueiam esse
+ * e-mail por 15 minutos. Protege contra robôs testando senhas. Fica em memória:
+ * vale para um servidor só e zera se ele reiniciar (veja o README).
+ */
+const MAX_FAILURES = 5;
+const WINDOW_MS = 15 * 60 * 1000;
+const failures = new Map<string, { count: number; since: number }>();
+
+export function loginBlockedFor(email: string): number {
+  const entry = failures.get(email);
+  if (!entry) return 0;
+  const elapsed = Date.now() - entry.since;
+  if (elapsed > WINDOW_MS) {
+    failures.delete(email);
+    return 0;
+  }
+  return entry.count >= MAX_FAILURES ? Math.ceil((WINDOW_MS - elapsed) / 60000) : 0;
+}
+
+export function registerLoginFailure(email: string) {
+  const entry = failures.get(email);
+  if (!entry || Date.now() - entry.since > WINDOW_MS) failures.set(email, { count: 1, since: Date.now() });
+  else entry.count++;
+}
+
+export function clearLoginFailures(email: string) {
+  failures.delete(email);
+}
+
 /** preHandler para rotas que exigem login. */
 export async function requireAuth(request: FastifyRequest, reply: FastifyReply) {
   const user = userFromRequest(request);

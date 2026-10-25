@@ -38,6 +38,22 @@ const AnalysisSchema = z.object({
   gaps: z.array(z.string()).describe("Requisitos que faltam ou estão fracos"),
   red_flags: z.array(z.string()).describe("Conflitos com senioridade, deal breakers, local, modelo de trabalho, salário etc."),
   application_tips: z.string().describe("Como o candidato deve se posicionar ao se candidatar"),
+  salary_estimate: z
+    .object({
+      source: z
+        .enum(["informado na vaga", "estimativa"])
+        .describe("'informado na vaga' só se a descrição traz o valor; senão 'estimativa'"),
+      min: z.number().int().describe("Valor mínimo da faixa"),
+      max: z.number().int().describe("Valor máximo da faixa"),
+      currency: z.enum(["BRL", "USD", "EUR"]),
+      period: z.enum(["mensal", "anual", "por hora"]),
+      contract: z.enum(["CLT", "PJ", "não informado"]).describe("Regime a que a faixa se refere"),
+      basis: z.string().describe("1 frase: de onde veio o valor (trecho da vaga ou o que embasou a estimativa)"),
+      vs_candidate: z
+        .enum(["acima da pretensão", "dentro da pretensão", "abaixo da pretensão", "pretensão não informada"])
+        .describe("Comparação com a pretensão salarial mínima do candidato"),
+    })
+    .describe("Faixa salarial da vaga: a informada, ou uma estimativa de mercado"),
 });
 
 export type Analysis = z.infer<typeof AnalysisSchema> & { engine: string };
@@ -48,6 +64,7 @@ Pese os requisitos obrigatórios mais do que os desejáveis.
 Senioridade é decisiva: compare o nível que a vaga pede (pelo título, anos de experiência e responsabilidades) com o nível do candidato. Vaga um nível acima deve ficar no máximo "parcial"; dois ou mais níveis acima (ex.: candidato Júnior e vaga Sênior) deve ser "fraca" e aparecer em red_flags.
 Conflitos com os "deal breakers", localização, modelo de trabalho ou salário do candidato também devem baixar a nota bastante e aparecer em red_flags.
 Escala da nota: 85-100 excelente (deve se candidatar já), 70-84 boa, 45-69 parcial, 0-44 fraca.
+Salário (salary_estimate): se a vaga informa o salário ou a faixa, use exatamente esse valor com source "informado na vaga". Se não informa, estime uma faixa realista de mercado para o cargo, a senioridade, a cidade e o regime (CLT ou PJ, se der para identificar), com source "estimativa"; em vaga brasileira use BRL mensal, e em vaga internacional paga em outra moeda use a moeda dela. Nunca apresente uma estimativa como valor informado. Em basis, diga em uma frase de onde veio o número. Compare a faixa com a pretensão salarial do candidato em vs_candidate.
 Responda sempre em português do Brasil, de forma curta e direta.`;
 
 const MAX_DESCRIPTION_CHARS = 30_000;
@@ -98,8 +115,9 @@ export async function analyzeJob(job: Job): Promise<Analysis> {
   const analysis = await analyzeWithClaude(profile, job);
 
   db.prepare(
-    `INSERT OR REPLACE INTO analyses (job_id, score, verdict, summary, strengths, gaps, red_flags, application_tips, engine)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO analyses
+       (job_id, score, verdict, summary, strengths, gaps, red_flags, application_tips, engine, salary_estimate)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     job.id,
     analysis.score,
@@ -110,6 +128,7 @@ export async function analyzeJob(job: Job): Promise<Analysis> {
     JSON.stringify(analysis.red_flags),
     analysis.application_tips,
     analysis.engine,
+    JSON.stringify(analysis.salary_estimate),
   );
 
   if (analysis.score >= profile.min_score) {

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
-import { AnalysisUnavailable, analyzeJob, type Job } from "../analyzer.js";
+import { AnalysisUnavailable, analyzeJob, type Analysis, type Job } from "../analyzer.js";
 import { requireAuth } from "../auth.js";
 import { config } from "../config.js";
 import { db } from "../db.js";
@@ -94,6 +94,7 @@ type AnalysisRow = {
   application_tips: string;
   engine: string;
   analyzed_at: string;
+  salary_estimate: string | null;
 };
 
 function getOwnedJob(userId: number, jobId: number): Job | undefined {
@@ -105,7 +106,8 @@ function jobDetail(jobId: number) {
   const { preview, preview_score, ...job } = db.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId) as Job;
   const row = db
     .prepare(
-      `SELECT score, verdict, summary, strengths, gaps, red_flags, application_tips, engine, created_at AS analyzed_at
+      `SELECT score, verdict, summary, strengths, gaps, red_flags, application_tips, engine, salary_estimate,
+              created_at AS analyzed_at
        FROM analyses WHERE job_id = ?`,
     )
     .get(jobId) as AnalysisRow | undefined;
@@ -119,6 +121,10 @@ function jobDetail(jobId: number) {
           strengths: JSON.parse(row.strengths) as string[],
           gaps: JSON.parse(row.gaps) as string[],
           red_flags: JSON.parse(row.red_flags) as string[],
+          // Análises antigas (antes da estimativa de salário) vêm com null.
+          salary_estimate: row.salary_estimate
+            ? (JSON.parse(row.salary_estimate) as Analysis["salary_estimate"])
+            : null,
         }
       : null,
     aiEnabled: config.ai.enabled,
@@ -132,7 +138,6 @@ export async function jobRoutes(app: FastifyInstance) {
   app.get("/", async (request) => {
     const { filter, q, company, page, pageSize } = ListQuery.parse(request.query);
     const userId = request.user.id;
-    refreshPreviews(userId); // garante que toda vaga tenha a nota grátis
     const profile = getProfile(userId);
     const minScore = profile.min_score;
     const levels = acceptedLevels(profile);
@@ -197,7 +202,6 @@ export async function jobRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>("/:id", async (request, reply) => {
     const job = getOwnedJob(request.user.id, Number(request.params.id));
     if (!job) return reply.code(404).send({ error: "Vaga não encontrada." });
-    if (job.preview_score === null) refreshPreviews(request.user.id);
     return { job: jobDetail(job.id) };
   });
 
@@ -243,35 +247,51 @@ export async function jobRoutes(app: FastifyInstance) {
 
   app.post("/collect", async (request, reply) => {
     const userId = request.user.id;
-    // Guarda o maior id antes da busca: tudo acima dele é vaga nova desta busca.
-    const { lastId } = db.prepare("SELECT COALESCE(MAX(id), 0) AS lastId FROM jobs").get() as { lastId: number };
-
-    const results = await collectJobs(userId, getProfile(userId));
-    if (results.length === 0) {
-      return reply
-        .code(400)
-        .send({ error: "Nenhuma fonte configurada. Adicione palavras-chave ou empresas em Configurações." });
+    // Uma busca por usuário de cada vez: dois cliques (ou duas abas) não disparam duas buscas.
+    if (collectingUsers.has(userId)) {
+      return reply.code(409).send({ error: "Já existe uma busca em andamento. Aguarde ela terminar." });
     }
-    refreshPreviews(userId); // as vagas novas já saem com a nota grátis
+    collectingUsers.add(userId);
+    try {
+      return await collect(userId, reply);
+    } finally {
+      collectingUsers.delete(userId);
+    }
+  });
+}
 
-    // Das vagas novas, quantas passam nos filtros de nota e de senioridade (o mesmo da lista).
-    const levels = acceptedLevels(getProfile(userId));
-    const { added, visible, wrongLevel } = db
-      .prepare(
-        `SELECT COUNT(*) AS added,
+/** Usuários com uma busca em andamento agora (vale para um servidor só; veja o README). */
+const collectingUsers = new Set<number>();
+
+async function collect(userId: number, reply: FastifyReply) {
+  // Guarda o maior id antes da busca: tudo acima dele é vaga nova desta busca.
+  const { lastId } = db.prepare("SELECT COALESCE(MAX(id), 0) AS lastId FROM jobs").get() as { lastId: number };
+
+  const results = await collectJobs(userId, getProfile(userId));
+  if (results.length === 0) {
+    return reply
+      .code(400)
+      .send({ error: "Nenhuma fonte configurada. Adicione palavras-chave ou empresas em Configurações." });
+  }
+  refreshPreviews(userId); // as vagas novas já saem com a nota grátis
+
+  // Das vagas novas, quantas passam nos filtros de nota e de senioridade (o mesmo da lista).
+  const levels = acceptedLevels(getProfile(userId));
+  const { added, visible, wrongLevel } = db
+    .prepare(
+      `SELECT COUNT(*) AS added,
                 SUM(CASE WHEN ${visibleSql(levels)} THEN 1 ELSE 0 END) AS visible,
                 SUM(CASE WHEN NOT ${seniorityFilterSql(levels)} THEN 1 ELSE 0 END) AS wrongLevel
          ${FROM} WHERE j.user_id = ? AND j.id > ?`,
-      )
-      .get(userId, lastId) as { added: number; visible: number | null; wrongLevel: number | null };
+    )
+    .get(userId, lastId) as { added: number; visible: number | null; wrongLevel: number | null };
 
-    return {
-      results,
-      added: Number(added),
-      visible: Number(visible ?? 0),
-      hidden: Number(added) - Number(visible ?? 0),
-      hiddenByLevel: Number(wrongLevel ?? 0),
-      minVisibleScore: config.minVisibleScore,
-    };
-  });
+  return {
+    results,
+    added: Number(added),
+    visible: Number(visible ?? 0),
+    hidden: Number(added) - Number(visible ?? 0),
+    hiddenByLevel: Number(wrongLevel ?? 0),
+    minVisibleScore: config.minVisibleScore,
+  };
 }

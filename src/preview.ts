@@ -89,6 +89,17 @@ export function computePreview(profile: Profile, job: { title: string; descripti
   };
 }
 
+/**
+ * Na inicialização: calcula as prévias que ficaram pendentes (ex.: depois de uma
+ * migração que zerou as notas). Assim as rotas de leitura nunca precisam calcular nada.
+ */
+export function refreshPendingPreviewsForAllUsers() {
+  const users = db.prepare("SELECT DISTINCT user_id FROM jobs WHERE preview_score IS NULL").all() as {
+    user_id: number;
+  }[];
+  return users.reduce((total, { user_id }) => total + refreshPreviews(user_id), 0);
+}
+
 /** Calcula e salva a prévia das vagas do usuário que ainda não têm (ou de todas, se `all`). */
 export function refreshPreviews(userId: number, { all = false } = {}) {
   const profile = getProfile(userId);

@@ -204,6 +204,19 @@ Sem `ANTHROPIC_API_KEY`, tudo funciona, menos a análise com IA (a prévia grát
 - Nenhuma vaga vai para a IA sem o usuário pedir (ou ligar a análise automática).
 - **O perfil e o currículo são enviados à Anthropic** em cada análise com IA.
 - `.env`, certificados e o banco ficam fora do git (veja o `.gitignore`).
+- Login limitado: 5 senhas erradas em 15 min bloqueiam aquele e-mail (resposta 429).
+
+## Vários usuários e desempenho
+
+- **Índices** em `jobs`, `notifications`, `sessions` e `ai_usage`. Todos começam por `user_id`, então a lista de um usuário não varre as vagas dos outros.
+- **SQLite em WAL**, com `busy_timeout` e `synchronous=NORMAL`. Assim leituras e escritas simultâneas não travam umas às outras.
+- **Rotas de leitura leves.** O recálculo de previews saiu dos `GET`. Agora ele roda ao salvar o perfil, depois de cada busca e na manutenção.
+- **Manutenção** ao iniciar e de hora em hora: calcula os previews pendentes e apaga as sessões expiradas.
+- **Uma busca por usuário por vez.** Uma segunda busca enquanto a primeira roda recebe 409.
+- **Desligamento limpo** (SIGINT/SIGTERM) fecha o servidor e o banco.
+- **Rodar rápido:** `npm start`, sem o watch do `npm run dev`.
+
+**Limites:** o SQLite aguenta bem dezenas de usuários. A trava de busca e o limite de login ficam em memória e só valem com **um** processo do backend. Para rodar várias instâncias, o próximo passo é migrar para Postgres e guardar esse estado no banco ou no Redis.
 
 ## Como estender
 
