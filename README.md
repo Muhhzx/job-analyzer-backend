@@ -202,6 +202,8 @@ Sem `ANTHROPIC_API_KEY`, tudo funciona, menos a análise com IA (a prévia grát
 
 ## Segurança e privacidade
 
+> Explicação completa de cada proteção (o que faz, qual ataque impede e qual teste prova): [SECURITY.md](SECURITY.md). Lista de todos os testes: [TESTING.md](TESTING.md).
+
 - Senhas com `scrypt` + salt e comparação em tempo constante.
 - Cookie `httpOnly`, `sameSite=lax` (e `secure` em produção).
 - Toda entrada é validada com Zod, e cada usuário só acessa as próprias vagas.
