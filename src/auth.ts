@@ -21,7 +21,18 @@ export function hashPassword(password: string): string {
   return `${salt}:${hash}`;
 }
 
-export function verifyPassword(password: string, stored: string): boolean {
+/**
+ * Hash de uma senha que não existe, usado quando o e-mail não está cadastrado.
+ * Assim o login demora o mesmo com ou sem conta, e o tempo de resposta não revela
+ * quais e-mails existem.
+ */
+const DUMMY_HASH = hashPassword(crypto.randomBytes(16).toString("hex"));
+
+export function verifyPassword(password: string, stored: string | undefined): boolean {
+  if (stored === undefined) {
+    verifyPassword(password, DUMMY_HASH);
+    return false;
+  }
   const [salt, hash] = stored.split(":");
   if (!salt || !hash) return false;
   const candidate = crypto.scryptSync(password, salt, 64);
@@ -29,11 +40,26 @@ export function verifyPassword(password: string, stored: string): boolean {
   return expected.length === candidate.length && crypto.timingSafeEqual(candidate, expected);
 }
 
-export function startSession(reply: FastifyReply, userId: number) {
+/**
+ * O banco guarda só o SHA-256 do token, nunca o token em si.
+ * Se alguém copiar o arquivo do banco, não consegue usar as sessões para entrar.
+ */
+export function hashToken(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+/**
+ * Cria uma sessão nova (token aleatório de 256 bits) e envia no cookie.
+ * Se a requisição já tinha uma sessão, ela é apagada: cada login gera um token novo.
+ */
+export function startSession(request: FastifyRequest, reply: FastifyReply, userId: number) {
+  const previous = request.cookies[SESSION_COOKIE];
+  if (previous) db.prepare("DELETE FROM sessions WHERE token = ?").run(hashToken(previous));
+
   const token = crypto.randomBytes(32).toString("hex");
   const expires = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
   db.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)").run(
-    token,
+    hashToken(token),
     userId,
     expires.toISOString(),
   );
@@ -48,19 +74,20 @@ export function startSession(reply: FastifyReply, userId: number) {
 
 export function endSession(request: FastifyRequest, reply: FastifyReply) {
   const token = request.cookies[SESSION_COOKIE];
-  if (token) db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+  if (token) db.prepare("DELETE FROM sessions WHERE token = ?").run(hashToken(token));
   reply.clearCookie(SESSION_COOKIE, { path: "/" });
 }
 
 export function userFromRequest(request: FastifyRequest): User | null {
   const token = request.cookies[SESSION_COOKIE];
-  if (!token) return null;
+  // Token com formato errado nem consulta o banco.
+  if (!token || !/^[0-9a-f]{64}$/.test(token)) return null;
   const row = db
     .prepare(
       `SELECT u.id, u.name, u.email, s.expires_at FROM sessions s
        JOIN users u ON u.id = s.user_id WHERE s.token = ?`,
     )
-    .get(token) as (User & { expires_at: string }) | undefined;
+    .get(hashToken(token)) as (User & { expires_at: string }) | undefined;
   if (!row || new Date(row.expires_at) < new Date()) return null;
   return { id: row.id, name: row.name, email: row.email };
 }
@@ -72,33 +99,57 @@ export function cleanupExpiredSessions(): number {
 }
 
 /**
- * Limite de tentativas de login por e-mail: 5 erros em 15 minutos bloqueiam esse
- * e-mail por 15 minutos. Protege contra robôs testando senhas. Fica em memória:
- * vale para um servidor só e zera se ele reiniciar (veja o README).
+ * Limites de tentativas, em janelas de 15 minutos. Protegem contra robôs testando senhas:
+ * - por e-mail: 5 senhas erradas bloqueiam aquele e-mail;
+ * - por IP: 20 senhas erradas (em qualquer e-mail) ou REGISTER_LIMIT_PER_IP cadastros (padrão 10) bloqueiam aquele IP.
+ * Ficam em memória: valem para um servidor só e zeram se ele reiniciar (veja o README).
  */
-const MAX_FAILURES = 5;
 const WINDOW_MS = 15 * 60 * 1000;
-const failures = new Map<string, { count: number; since: number }>();
 
-export function loginBlockedFor(email: string): number {
-  const entry = failures.get(email);
-  if (!entry) return 0;
-  const elapsed = Date.now() - entry.since;
-  if (elapsed > WINDOW_MS) {
-    failures.delete(email);
-    return 0;
+class AttemptLimiter {
+  private entries = new Map<string, { count: number; since: number }>();
+  constructor(private max: number) {}
+
+  /** Minutos que faltam para liberar (0 = liberado). */
+  blockedFor(key: string): number {
+    const entry = this.entries.get(key);
+    if (!entry) return 0;
+    const elapsed = Date.now() - entry.since;
+    if (elapsed > WINDOW_MS) {
+      this.entries.delete(key);
+      return 0;
+    }
+    return entry.count >= this.max ? Math.ceil((WINDOW_MS - elapsed) / 60000) : 0;
   }
-  return entry.count >= MAX_FAILURES ? Math.ceil((WINDOW_MS - elapsed) / 60000) : 0;
+
+  hit(key: string) {
+    const entry = this.entries.get(key);
+    if (!entry || Date.now() - entry.since > WINDOW_MS) this.entries.set(key, { count: 1, since: Date.now() });
+    else entry.count++;
+    // Não deixa o mapa crescer sem fim com chaves velhas.
+    if (this.entries.size > 10_000) {
+      for (const [k, v] of this.entries) if (Date.now() - v.since > WINDOW_MS) this.entries.delete(k);
+    }
+  }
+
+  clear(key: string) {
+    this.entries.delete(key);
+  }
+
+  reset() {
+    this.entries.clear();
+  }
 }
 
-export function registerLoginFailure(email: string) {
-  const entry = failures.get(email);
-  if (!entry || Date.now() - entry.since > WINDOW_MS) failures.set(email, { count: 1, since: Date.now() });
-  else entry.count++;
-}
+export const loginFailuresByEmail = new AttemptLimiter(5);
+export const loginFailuresByIp = new AttemptLimiter(20);
+export const registrationsByIp = new AttemptLimiter(config.registerLimitPerIp);
 
-export function clearLoginFailures(email: string) {
-  failures.delete(email);
+/** Zera todos os limites (usado nos testes). */
+export function resetRateLimits() {
+  loginFailuresByEmail.reset();
+  loginFailuresByIp.reset();
+  registrationsByIp.reset();
 }
 
 /** preHandler para rotas que exigem login. */

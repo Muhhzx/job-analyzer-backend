@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -138,6 +139,47 @@ if (!hasColumn("jobs", "seniority_level")) {
   `);
 }
 
+if (!hasColumn("sessions", "hashed")) {
+  // Tokens de sessão passam a ser guardados só como SHA-256. Converte as sessões que já existem
+  // (assim ninguém precisa entrar de novo) e marca a tabela como convertida.
+  const rows = db.prepare("SELECT token FROM sessions").all() as { token: string }[];
+  const update = db.prepare("UPDATE sessions SET token = ? WHERE token = ?");
+  db.exec("BEGIN");
+  for (const { token } of rows) update.run(crypto.createHash("sha256").update(token).digest("hex"), token);
+  db.exec("ALTER TABLE sessions ADD COLUMN hashed INTEGER NOT NULL DEFAULT 1; COMMIT;");
+}
+
+if (!hasColumn("applications", "job_id")) {
+  // Kanban de candidaturas: a etapa de cada vaga que o usuário está acompanhando,
+  // com os dados da candidatura (CV usado, pretensão, contato, anotações) e o histórico de etapas.
+  // As vagas que já estavam salvas ou com candidatura entram no quadro na etapa correspondente.
+  db.exec(`
+    CREATE TABLE applications (
+      job_id INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      stage TEXT NOT NULL DEFAULT 'salva',
+      applied_at TEXT,
+      resume_used TEXT NOT NULL DEFAULT '',
+      salary_expectation TEXT NOT NULL DEFAULT '',
+      contact TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      stage_changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE application_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER NOT NULL REFERENCES applications(job_id) ON DELETE CASCADE,
+      stage TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO applications (job_id, user_id, stage)
+      SELECT id, user_id, CASE status WHEN 'salva' THEN 'salva' ELSE 'candidatei' END
+      FROM jobs WHERE status IN ('salva', 'candidatado');
+    INSERT INTO application_events (job_id, stage) SELECT job_id, stage FROM applications;
+  `);
+}
+
 /**
  * Índices: sem eles, toda consulta lê a tabela inteira (de todos os usuários).
  * Cada um segue os filtros das telas: vagas do usuário por situação, por nota,
@@ -155,5 +197,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_sessions_expires   ON sessions (expires_at);
   CREATE INDEX IF NOT EXISTS idx_ai_usage_created   ON ai_usage (created_at);
   CREATE INDEX IF NOT EXISTS idx_ai_usage_user      ON ai_usage (user_id);
+  CREATE INDEX IF NOT EXISTS idx_apps_user_stage    ON applications (user_id, stage);
+  CREATE INDEX IF NOT EXISTS idx_app_events_job     ON application_events (job_id);
 `);
 db.exec("PRAGMA optimize;");

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { AnalysisUnavailable, analyzeJob, type Analysis, type Job } from "../analyzer.js";
+import { getApplication, getApplicationEvents, syncApplicationWithStatus } from "../applications.js";
 import { requireAuth } from "../auth.js";
 import { config } from "../config.js";
 import { db } from "../db.js";
@@ -127,6 +128,8 @@ function jobDetail(jobId: number) {
             : null,
         }
       : null,
+    application: getApplication(jobId) ?? null,
+    applicationEvents: getApplicationEvents(jobId),
     aiEnabled: config.ai.enabled,
     prefilterMinScore: config.ai.prefilterMinScore,
   };
@@ -222,6 +225,7 @@ export async function jobRoutes(app: FastifyInstance) {
     const job = getOwnedJob(request.user.id, Number(request.params.id));
     if (!job) return reply.code(404).send({ error: "Vaga não encontrada." });
     db.prepare("UPDATE jobs SET status = ? WHERE id = ?").run(status, job.id);
+    syncApplicationWithStatus(request.user.id, job.id, status);
     return { job: jobDetail(job.id) };
   });
 

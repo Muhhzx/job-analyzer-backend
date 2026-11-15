@@ -1,35 +1,11 @@
-import cookie from "@fastify/cookie";
-import Fastify from "fastify";
-import { ZodError } from "zod";
+import { buildApp } from "./app.js";
 import { cleanupExpiredSessions } from "./auth.js";
 import { config } from "./config.js";
 import { db } from "./db.js";
 import { refreshPendingPreviewsForAllUsers } from "./preview.js";
-import { authRoutes } from "./routes/auth.js";
-import { dashboardRoutes } from "./routes/dashboard.js";
-import { jobRoutes } from "./routes/jobs.js";
-import { profileRoutes } from "./routes/profile.js";
 import { startScheduler } from "./scheduler.js";
 
-const app = Fastify({ logger: { level: config.production ? "info" : "warn" } });
-
-await app.register(cookie);
-
-// Erros de validação viram 400 com a primeira mensagem legível.
-app.setErrorHandler((error, _request, reply) => {
-  if (error instanceof ZodError) {
-    return reply.code(400).send({ error: error.issues[0]?.message ?? "Dados inválidos." });
-  }
-  app.log.error(error);
-  const { statusCode = 500, message } = error as { statusCode?: number; message?: string };
-  return reply.code(statusCode).send({ error: statusCode === 500 ? "Erro interno no servidor." : message });
-});
-
-app.get("/api/health", async () => ({ ok: true }));
-await app.register(authRoutes, { prefix: "/api/auth" });
-await app.register(profileRoutes, { prefix: "/api/profile" });
-await app.register(jobRoutes, { prefix: "/api/jobs" });
-await app.register(dashboardRoutes, { prefix: "/api" });
+const app = await buildApp();
 
 // Manutenção na inicialização: prévias pendentes (ex.: após migração) e sessões vencidas.
 // Assim as rotas de leitura só leem, sem trabalho extra a cada requisição.

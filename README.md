@@ -138,6 +138,8 @@ Arquivo `data/job-analyzer.db`, com as tabelas criadas sozinhas na primeira exec
 | `analyses` | só análises de **IA**: nota, veredito, resumo, pontos fortes, lacunas, alertas, dicas |
 | `ai_usage` | tokens e custo de cada análise com IA |
 | `notifications` | avisos do usuário |
+| `applications` | quadro de candidaturas: etapa, data, CV usado, pretensão, contato e anotações |
+| `application_events` | histórico de mudanças de etapa de cada candidatura |
 
 ---
 
@@ -158,6 +160,8 @@ Rotas sob `/api`. As marcadas com 🔒 exigem login (cookie de sessão).
 | POST 🔒 | `/jobs/:id/analyze` | Analisa a vaga com IA |
 | POST 🔒 | `/jobs/collect` | Busca vagas nas fontes. Devolve novas, visíveis, escondidas e avisos |
 | GET 🔒 | `/dashboard` | Resumo, automação e uso da IA |
+| GET 🔒 | `/applications` | Quadro de candidaturas: itens por etapa e CVs já usados |
+| PATCH · DELETE 🔒 | `/applications/:jobId` | Cria/atualiza a candidatura (etapa, CV, pretensão, contato, anotações) · tira do quadro |
 | GET 🔒 | `/sources` | Fontes e se estão configuradas |
 | GET · POST 🔒 | `/notifications` · `/notifications/read` | Lista · marca como lidas |
 | GET | `/health` | Verificação de saúde |
@@ -177,6 +181,7 @@ npm run dev             # API em http://localhost:4000
 | `npm run dev` | Sobe com recarga automática |
 | `npm start` | Sobe sem recarga (produção) |
 | `npm run typecheck` | Checa os tipos |
+| `npm test` | Roda os testes (Vitest): login, sessões, isolamento entre usuários, quadro de candidaturas e regras da nota. Usa um banco temporário e a IA desligada |
 
 Sem `ANTHROPIC_API_KEY`, tudo funciona, menos a análise com IA (a prévia grátis continua).
 
@@ -204,7 +209,12 @@ Sem `ANTHROPIC_API_KEY`, tudo funciona, menos a análise com IA (a prévia grát
 - Nenhuma vaga vai para a IA sem o usuário pedir (ou ligar a análise automática).
 - **O perfil e o currículo são enviados à Anthropic** em cada análise com IA.
 - `.env`, certificados e o banco ficam fora do git (veja o `.gitignore`).
-- Login limitado: 5 senhas erradas em 15 min bloqueiam aquele e-mail (resposta 429).
+- Login limitado (resposta 429): 5 senhas erradas em 15 min bloqueiam aquele e-mail; 20 senhas erradas em qualquer e-mail bloqueiam aquele IP; cadastros por IP limitados por `REGISTER_LIMIT_PER_IP` (padrão 10 a cada 15 min).
+- Senha e e-mail inexistente dão a mesma resposta, no mesmo tempo (a senha é conferida contra um hash falso), para não revelar quem tem conta.
+- Tokens de sessão aleatórios de 256 bits. O banco guarda só o SHA-256 deles: uma cópia do banco não permite entrar na conta de ninguém. Cada login gera um token novo e apaga o anterior do mesmo navegador.
+- Senha de 8 a 128 caracteres (o limite evita deixar o scrypt lento de propósito).
+- Respostas da API com `Cache-Control: no-store` e `X-Content-Type-Options: nosniff`.
+- `request.ip` vem do `X-Forwarded-For` só quando a conexão chega do próprio servidor (proxy do Next).
 
 ## Vários usuários e desempenho
 

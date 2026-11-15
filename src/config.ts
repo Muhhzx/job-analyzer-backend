@@ -23,6 +23,12 @@ export const config = {
    * Salvas para que a próxima busca não traga a mesma vaga de novo.
    */
   minVisibleScore: num(process.env.MIN_VISIBLE_SCORE, 20),
+  /**
+   * Cadastros por IP a cada 15 minutos. Atrás do proxy do Next, todo mundo na mesma rede
+   * (ou a própria máquina, em desenvolvimento) conta como um IP só. Os testes de ponta a ponta
+   * criam muitas contas seguidas e sobem este número só no servidor de teste.
+   */
+  registerLimitPerIp: num(process.env.REGISTER_LIMIT_PER_IP, 10),
   ai: {
     enabled: Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN),
     model: process.env.ANTHROPIC_MODEL || "claude-haiku-5-5",
