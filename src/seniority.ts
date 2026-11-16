@@ -75,6 +75,14 @@ export function detectJobLevel(title: string, description = ""): JobLevel {
   }
 
   // 2. Sem nível no título: procura anos de experiência na descrição (fica com o menor número).
+  const minYears = findRequiredYears(description);
+  if (minYears) return { level: levelFromYears(minYears.years), source: "experiência pedida", evidence: minYears.evidence };
+
+  return { level: null, source: null, evidence: null };
+}
+
+/** Menor número de anos de experiência pedido na descrição ("3+ anos", "5 years of experience"). */
+function findRequiredYears(description: string): { years: number; evidence: string } | null {
   const d = normalize(description);
   let minYears: { years: number; evidence: string } | null = null;
   for (const pattern of YEARS_PATTERNS) {
@@ -83,9 +91,12 @@ export function detectJobLevel(title: string, description = ""): JobLevel {
       if (years > 0 && years <= 20 && (!minYears || years < minYears.years)) minYears = { years, evidence: m[0] };
     }
   }
-  if (minYears) return { level: levelFromYears(minYears.years), source: "experiência pedida", evidence: minYears.evidence };
+  return minYears;
+}
 
-  return { level: null, source: null, evidence: null };
+/** Anos de experiência que a vaga pede (o menor citado), ou null se não pede. */
+export function requiredYears(description: string): number | null {
+  return findRequiredYears(description)?.years ?? null;
 }
 
 /**

@@ -1,6 +1,7 @@
 import { config } from "./config.js";
 import { db } from "./db.js";
 import { getProfile, splitList, type Profile } from "./profile.js";
+import { blockReasons } from "./blockers.js";
 import { acceptedLevels, detectJobLevel, LEVELS, PROFILE_LEVEL, type JobLevel } from "./seniority.js";
 import { normalize } from "./sources/types.js";
 
@@ -40,6 +41,8 @@ export type Preview = {
     accepted: boolean | null;
   };
   belowCutoff: boolean;
+  /** Motivos dos filtros de bloqueio. Com algum motivo, a vaga fica escondida. */
+  blockedBy: string[];
 };
 
 export function computePreview(profile: Profile, job: { title: string; description: string }): Preview {
@@ -86,6 +89,7 @@ export function computePreview(profile: Profile, job: { title: string; descripti
       accepted: jobLevel === null || accepted === null ? null : accepted.includes(jobLevel),
     },
     belowCutoff: score < config.ai.prefilterMinScore,
+    blockedBy: blockReasons(profile, job),
   };
 }
 
@@ -107,11 +111,13 @@ export function refreshPreviews(userId: number, { all = false } = {}) {
     .prepare(`SELECT id, title, description FROM jobs WHERE user_id = ? ${all ? "" : "AND preview_score IS NULL"}`)
     .all(userId) as { id: number; title: string; description: string }[];
 
-  const update = db.prepare("UPDATE jobs SET preview_score = ?, preview = ?, seniority_level = ? WHERE id = ?");
+  const update = db.prepare(
+    "UPDATE jobs SET preview_score = ?, preview = ?, seniority_level = ?, blocked = ? WHERE id = ?",
+  );
   for (const job of jobs) {
     const p = computePreview(profile, job);
     const level = detectJobLevel(job.title, job.description).level;
-    update.run(p.score, JSON.stringify(p), level, job.id);
+    update.run(p.score, JSON.stringify(p), level, p.blockedBy.length ? 1 : 0, job.id);
   }
   return jobs.length;
 }

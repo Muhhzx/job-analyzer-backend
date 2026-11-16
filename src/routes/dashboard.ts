@@ -3,6 +3,7 @@ import { requireAuth } from "../auth.js";
 import { config } from "../config.js";
 import { db } from "../db.js";
 import { listNotifications, markAllRead, unreadCount } from "../notify.js";
+import { NOT_BLOCKED_SQL } from "../blockers.js";
 import { acceptedLevels, seniorityFilterSql } from "../seniority.js";
 import { getProfile, profileCompletion } from "../profile.js";
 import { SOURCES } from "../sources/index.js";
@@ -15,7 +16,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const userId = request.user.id;
     const profile = getProfile(userId);
     // Mesmo filtro de senioridade da lista de vagas.
-    const levelFilter = seniorityFilterSql(acceptedLevels(profile));
+    // Mesmos filtros da lista: senioridade e bloqueios.
+    const levelFilter = `${seniorityFilterSql(acceptedLevels(profile))} AND ${NOT_BLOCKED_SQL}`;
 
     // Nota que vale: a da IA, se existir; senão, a prévia grátis.
     const stats = db

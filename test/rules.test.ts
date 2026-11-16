@@ -30,6 +30,9 @@ describe("prévia grátis", () => {
   // Só os campos que a prévia usa; o resto do perfil não importa aqui.
   const profile = {
     accepted_levels: "",
+    block_presets: "",
+    block_terms: "",
+    block_max_years: 0,
     skills: "Angular, C#, SQL, Docker, TypeScript",
     desired_roles: "Desenvolvedor",
     seniority: "Júnior",

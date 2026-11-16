@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { db } from "./db.js";
 import { notify } from "./notify.js";
 import { getProfile, profileToText, type Profile } from "./profile.js";
+import { NOT_BLOCKED_SQL } from "./blockers.js";
 import { acceptedLevels, seniorityFilterSql } from "./seniority.js";
 import { limitReached, recordUsage } from "./usage.js";
 
@@ -148,7 +149,7 @@ export async function analyzeAboveCutoff(userId: number, limit = 20) {
     .prepare(
       `SELECT j.* FROM jobs j LEFT JOIN analyses a ON a.job_id = j.id
        WHERE j.user_id = ? AND a.job_id IS NULL AND j.status != 'descartada' AND j.preview_score >= ?
-         AND ${levelFilter}
+         AND ${levelFilter} AND ${NOT_BLOCKED_SQL}
        ORDER BY j.preview_score DESC LIMIT ?`,
     )
     .all(userId, config.ai.prefilterMinScore, limit) as Job[];
