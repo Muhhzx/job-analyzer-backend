@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireAuth } from "../auth.js";
+import { BLOCK_PRESET_IDS, BLOCK_PRESETS } from "../blockers.js";
 import { refreshPreviews } from "../preview.js";
 import {
   AUTO_COLLECT_OPTIONS,
@@ -32,6 +33,12 @@ const ProfileBody = z.object({
     .string()
     .regex(/^(\s*[0-4]\s*(,\s*[0-4]\s*)*)?$/, "Níveis inválidos.")
     .optional(),
+  block_presets: z
+    .string()
+    .refine((v) => v.split(",").map((s) => s.trim()).filter(Boolean).every((id) => BLOCK_PRESET_IDS.includes(id as never)), "Bloqueio inválido.")
+    .optional(),
+  block_terms: text,
+  block_max_years: z.number().int().min(0).max(20).optional(),
   min_score: z.number().int().min(0).max(100).optional(),
   auto_collect_hours: z
     .number()
@@ -46,6 +53,8 @@ function serialize(userId: number) {
   return {
     profile: { ...profile, auto_analyze: Boolean(profile.auto_analyze) },
     completion: profileCompletion(profile),
+    // Bloqueios prontos disponíveis, com o nome e os termos (a tela mostra o que cada um procura).
+    blockPresets: BLOCK_PRESET_IDS.map((id) => ({ id, label: BLOCK_PRESETS[id].label, terms: BLOCK_PRESETS[id].terms })),
   };
 }
 

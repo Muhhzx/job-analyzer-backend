@@ -139,6 +139,18 @@ if (!hasColumn("jobs", "seniority_level")) {
   `);
 }
 
+if (!hasColumn("jobs", "blocked")) {
+  // Filtros de bloqueio: a vaga guarda se está bloqueada (1) para as listas filtrarem no SQL;
+  // o motivo fica na prévia (JSON). Zera as prévias para todas serem recalculadas com o filtro.
+  db.exec(`
+    ALTER TABLE jobs ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE profiles ADD COLUMN block_presets TEXT NOT NULL DEFAULT '';
+    ALTER TABLE profiles ADD COLUMN block_terms TEXT NOT NULL DEFAULT '';
+    ALTER TABLE profiles ADD COLUMN block_max_years INTEGER NOT NULL DEFAULT 0;
+    UPDATE jobs SET preview_score = NULL, preview = NULL;
+  `);
+}
+
 if (!hasColumn("sessions", "hashed")) {
   // Tokens de sessão passam a ser guardados só como SHA-256. Converte as sessões que já existem
   // (assim ninguém precisa entrar de novo) e marca a tabela como convertida.
@@ -192,6 +204,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_jobs_user_company  ON jobs (user_id, company);
   CREATE INDEX IF NOT EXISTS idx_jobs_user_created  ON jobs (user_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_jobs_user_level    ON jobs (user_id, seniority_level);
+  CREATE INDEX IF NOT EXISTS idx_jobs_user_blocked  ON jobs (user_id, blocked);
   CREATE INDEX IF NOT EXISTS idx_notif_user_read    ON notifications (user_id, read);
   CREATE INDEX IF NOT EXISTS idx_sessions_user      ON sessions (user_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_expires   ON sessions (expires_at);

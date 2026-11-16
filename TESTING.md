@@ -1,11 +1,11 @@
 # Testes do Job Analyzer
 
-São **60 testes automatizados** em duas camadas:
+São **73 testes automatizados** em duas camadas:
 
 | Camada | Ferramenta | Onde | Quantos | O que prova |
 |---|---|---|---|---|
-| **API** (backend) | Vitest + `app.inject` do Fastify | `job-analyzer-backend/test/` | 48 | Regras de negócio, segurança do login e das sessões, e isolamento entre usuários, direto na API |
-| **De ponta a ponta** (E2E) | Playwright no Microsoft Edge | `job-analyzer-frontend/e2e/` | 12 | O que uma pessoa faz de verdade na tela: cadastro, login, quadro de candidaturas, e que duas pessoas não se enxergam |
+| **API** (backend) | Vitest + `app.inject` do Fastify | `job-analyzer-backend/test/` | 59 | Regras de negócio, segurança do login e das sessões, e isolamento entre usuários, direto na API |
+| **De ponta a ponta** (E2E) | Playwright no Microsoft Edge | `job-analyzer-frontend/e2e/` | 13 | O que uma pessoa faz de verdade na tela: cadastro, login, quadro de candidaturas, e que duas pessoas não se enxergam |
 
 **Por que duas camadas:** os testes de API são rápidos (cerca de 10 s) e cobrem todos os casos de borda, incluindo os de segurança, que são difíceis de reproduzir clicando. Os de ponta a ponta são mais lentos (cerca de 1,5 min), mas provam que front e back funcionam **juntos**: o proxy do Next, o cookie no navegador, os redirecionamentos e o arrastar e soltar.
 
@@ -39,7 +39,7 @@ npm run test:e2e
 
 ---
 
-## Testes da API (48)
+## Testes da API (59)
 
 ### `test/auth.test.ts`: login, cadastro e sessões (19)
 
@@ -106,9 +106,25 @@ A Ana cria vaga, candidatura (com anotação e contato), perfil e notificação.
 | cada item que a pessoa não aceita derruba a nota | Exatamente −25 |
 | vaga dois níveis acima perde 40 pontos | Júnior vendo vaga Sênior |
 
+### `test/blockers.test.ts`: filtros de bloqueio (11)
+
+| Teste | O que garante |
+|---|---|
+| sem filtro ligado, nada é bloqueado | Bloqueio é opcional |
+| bloqueio pronto de residência pega inglês e espanhol, sem acento e caixa | E não bloqueia quem **oferece** visto |
+| bloqueio de security clearance e de 100% presencial | Híbrido não é bloqueado |
+| termos próprios do usuário, com o motivo dizendo o que encontrou | |
+| limite de anos: esconde quem pede o limite ou mais | "3+ anos", "5 years"; 1 ano ou sem exigência passam |
+| bloqueio pronto que não existe é ignorado | |
+| ligar o filtro esconde a vaga das listas e ela aparece em "Bloqueadas" | Com a contagem |
+| a vaga bloqueada mostra o motivo e some do painel | |
+| desligar o filtro traz a vaga de volta | Nada é apagado |
+| recusa bloqueio pronto inválido e limite de anos fora da faixa | |
+| a tela recebe a lista de bloqueios prontos com os termos | |
+
 ---
 
-## Testes de ponta a ponta (12)
+## Testes de ponta a ponta (13)
 
 Rodam num navegador de verdade (Edge, sem janela), contra um backend e um frontend que sobem só para os testes.
 
@@ -133,6 +149,12 @@ Rodam num navegador de verdade (Edge, sem janela), contra um backend e um fronte
 | arrastar o cartão muda a etapa e continua lá depois de recarregar | Arrastar e soltar de verdade, e os números do topo atualizados |
 | abrir o cartão, trocar a etapa pelo formulário e ver o histórico na vaga | O caminho de quem não arrasta (celular) |
 | tirar do quadro pede confirmação e remove o cartão | |
+
+### `e2e/bloqueios.spec.ts`: filtros de bloqueio (1)
+
+| Teste | O que garante |
+|---|---|
+| ligar um filtro de bloqueio esconde a vaga e mostra o motivo | Marca o bloqueio no perfil, a vaga some da lista, aparece em "Bloqueadas" e a tela da vaga explica o motivo |
 
 ---
 

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { AnalysisUnavailable, analyzeJob, type Analysis, type Job } from "../analyzer.js";
+import { NOT_BLOCKED_SQL } from "../blockers.js";
 import { getApplication, getApplicationEvents, syncApplicationWithStatus } from "../applications.js";
 import { requireAuth } from "../auth.js";
 import { config } from "../config.js";
@@ -12,7 +13,7 @@ import { acceptedLevels, seniorityFilterSql } from "../seniority.js";
 import { collectJobs, insertJobs } from "../sources/index.js";
 
 const STATUSES = ["nova", "salva", "candidatado", "descartada"] as const;
-const FILTERS = ["melhores", "todas", "nova", "salva", "candidatado", "descartada", "ia"] as const;
+const FILTERS = ["melhores", "todas", "nova", "salva", "candidatado", "descartada", "ia", "bloqueadas"] as const;
 type Filter = (typeof FILTERS)[number];
 
 /**
@@ -22,11 +23,11 @@ type Filter = (typeof FILTERS)[number];
 const EFFECTIVE_SCORE = "COALESCE(a.score, j.preview_score)";
 
 /**
- * O que aparece na tela: nota a partir de config.minVisibleScore E nível de senioridade
- * entre os aceitos pelo usuário. O resto fica salvo, mas escondido.
+ * O que aparece na tela: nota a partir de config.minVisibleScore, nível de senioridade
+ * entre os aceitos pelo usuário e sem filtro de bloqueio. O resto fica salvo, mas escondido.
  */
 function visibleSql(levels: number[] | null) {
-  return `${EFFECTIVE_SCORE} >= ${Number(config.minVisibleScore)} AND ${seniorityFilterSql(levels)}`;
+  return `${EFFECTIVE_SCORE} >= ${Number(config.minVisibleScore)} AND ${seniorityFilterSql(levels)} AND ${NOT_BLOCKED_SQL}`;
 }
 
 const ListQuery = z.object({
@@ -46,6 +47,8 @@ const FILTER_SQL: Record<Filter, string> = {
   candidatado: "j.status = 'candidatado'",
   descartada: "j.status = 'descartada'",
   ia: "j.status != 'descartada' AND a.job_id IS NOT NULL",
+  // Só para conferir o que os filtros esconderam: ignora nota e nível, mostra só as bloqueadas.
+  bloqueadas: "j.status != 'descartada' AND j.blocked = 1",
 };
 
 /**
@@ -57,7 +60,8 @@ function buildWhere(
   userId: number,
   opts: { filter?: Filter; q?: string; company?: string; minScore: number; levels: number[] | null },
 ) {
-  const conditions = ["j.user_id = :user", visibleSql(opts.levels)];
+  // "Bloqueadas" é o único filtro que mostra vagas fora do visível.
+  const conditions = ["j.user_id = :user", opts.filter === "bloqueadas" ? "1 = 1" : visibleSql(opts.levels)];
   const params: Record<string, string | number> = { user: userId };
 
   if (opts.filter) {
@@ -188,6 +192,15 @@ export async function jobRoutes(app: FastifyInstance) {
       )
       .all(forCompanies.params);
 
+    // Bloqueadas ficam fora da contagem normal (não são "visíveis"): conta à parte.
+    const { bloqueadas } = db
+      .prepare(
+        `SELECT COUNT(*) AS bloqueadas ${FROM}
+         WHERE j.user_id = ? AND j.status != 'descartada' AND j.blocked = 1`,
+      )
+      .get(userId) as { bloqueadas: number };
+    counts.bloqueadas = Number(bloqueadas);
+
     return {
       jobs,
       total: Number(total),
@@ -281,14 +294,20 @@ async function collect(userId: number, reply: FastifyReply) {
 
   // Das vagas novas, quantas passam nos filtros de nota e de senioridade (o mesmo da lista).
   const levels = acceptedLevels(getProfile(userId));
-  const { added, visible, wrongLevel } = db
+  const { added, visible, wrongLevel, blocked } = db
     .prepare(
       `SELECT COUNT(*) AS added,
                 SUM(CASE WHEN ${visibleSql(levels)} THEN 1 ELSE 0 END) AS visible,
-                SUM(CASE WHEN NOT ${seniorityFilterSql(levels)} THEN 1 ELSE 0 END) AS wrongLevel
+                SUM(CASE WHEN NOT ${seniorityFilterSql(levels)} THEN 1 ELSE 0 END) AS wrongLevel,
+                SUM(CASE WHEN j.blocked = 1 THEN 1 ELSE 0 END) AS blocked
          ${FROM} WHERE j.user_id = ? AND j.id > ?`,
     )
-    .get(userId, lastId) as { added: number; visible: number | null; wrongLevel: number | null };
+    .get(userId, lastId) as {
+    added: number;
+    visible: number | null;
+    wrongLevel: number | null;
+    blocked: number | null;
+  };
 
   return {
     results,
@@ -296,6 +315,7 @@ async function collect(userId: number, reply: FastifyReply) {
     visible: Number(visible ?? 0),
     hidden: Number(added) - Number(visible ?? 0),
     hiddenByLevel: Number(wrongLevel ?? 0),
+    hiddenByBlock: Number(blocked ?? 0),
     minVisibleScore: config.minVisibleScore,
   };
 }

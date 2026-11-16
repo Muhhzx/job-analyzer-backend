@@ -18,6 +18,12 @@ export type Profile = {
   lever_boards: string;
   /** Níveis de vaga que o usuário quer ver, ex.: "1,2". Vazio = o nível dele e um acima. */
   accepted_levels: string;
+  /** Bloqueios prontos ligados, ex.: "residencia,clearance" (veja blockers.ts). */
+  block_presets: string;
+  /** Termos que escondem a vaga, separados por vírgula. */
+  block_terms: string;
+  /** Esconde vagas que pedem este número de anos ou mais (0 = desligado). */
+  block_max_years: number;
   min_score: number;
   /** 0 = só manual; senão, coleta automática a cada N horas. */
   auto_collect_hours: number;
@@ -43,6 +49,8 @@ export const PROFILE_TEXT_FIELDS = [
   "greenhouse_boards",
   "lever_boards",
   "accepted_levels",
+  "block_presets",
+  "block_terms",
 ] as const;
 
 export const AUTO_COLLECT_OPTIONS = [0, 6, 12, 24, 48, 168];
@@ -54,7 +62,10 @@ export function getProfile(userId: number): Profile {
 }
 
 export type ProfileUpdate = Partial<
-  Pick<Profile, (typeof PROFILE_TEXT_FIELDS)[number] | "min_score" | "auto_collect_hours" | "auto_analyze">
+  Pick<
+    Profile,
+    (typeof PROFILE_TEXT_FIELDS)[number] | "min_score" | "auto_collect_hours" | "auto_analyze" | "block_max_years"
+  >
 >;
 
 /** Atualiza só os campos enviados. */
@@ -72,6 +83,10 @@ export function updateProfile(userId: number, data: ProfileUpdate) {
   if (data.min_score !== undefined) {
     sets.push("min_score = ?");
     values.push(Math.max(0, Math.min(100, Math.round(data.min_score))));
+  }
+  if (data.block_max_years !== undefined) {
+    sets.push("block_max_years = ?");
+    values.push(Math.max(0, Math.min(20, Math.round(data.block_max_years))));
   }
   if (data.auto_collect_hours !== undefined) {
     sets.push("auto_collect_hours = ?");

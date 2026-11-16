@@ -107,7 +107,9 @@ flowchart TD
 - **Cargo:** +30 se o título bate com um cargo desejado, senão +10.
 - **Senioridade:** um nível acima do perfil, −20; dois ou mais, −40.
 - **O que não aceito:** −25 por item encontrado.
-- Abaixo de `AI_PREFILTER_MIN_SCORE`, a vaga é marcada como **pouco compatível** e nunca é analisada automaticamente.
+- **Filtros de bloqueio** (`blockers.ts`), opcionais, no perfil: bloqueios prontos (exige residência/cidadania, security clearance, 100% presencial), termos próprios e limite de anos de experiência. Diferente do "não aceito" (−25), um bloqueio **esconde** a vaga: ela fica em "Bloqueadas", com o motivo, e nunca vai para a IA.
+
+Abaixo de `AI_PREFILTER_MIN_SCORE`, a vaga é marcada como **pouco compatível** e nunca é analisada automaticamente.
 
 ### 2. Senioridade (`seniority.ts`)
 - Detecta o nível pelo **título** (Estágio, Júnior/Jr, Pleno, Sênior/Sr, Especialista/Lead/Staff) e por **numeração** ("Analista II", "Engineer III"). Com dois níveis ("Pleno/Sênior"), fica com o **menor**.
